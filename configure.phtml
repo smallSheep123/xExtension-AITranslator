@@ -7,7 +7,8 @@ $keySaved = $this->getApiKey() !== '';
 $titleModel = $this->getTitleModel();
 $contentModel = $this->getContentModel();
 $summaryModel = $this->getSummaryModel();
-$auto = $this->getConfigValue('auto_translate_titles', '1') === '1';
+$autoTitles = $this->getConfigValue('auto_translate_titles', '1') === '1';
+$autoContent = $this->getConfigValue('auto_translate_content', '1') === '1';
 $mode = $this->getConfigValue('display_mode', 'bilingual');
 $batch = $this->getConfigValue('title_batch_size', '12');
 ?>
@@ -48,7 +49,14 @@ $batch = $this->getConfigValue('title_batch_size', '12');
     <div class="form-group">
       <label class="group-name">Automatic title translation</label>
       <div class="group-controls">
-        <label><input type="checkbox" name="auto_translate_titles" value="1" <?php echo $auto ? 'checked' : ''; ?>> Translate titles as they appear while scrolling or switching feeds/categories</label>
+        <label><input type="checkbox" name="auto_translate_titles" value="1" <?php echo $autoTitles ? 'checked' : ''; ?>> Automatically translate titles currently loaded in the stream, including newly loaded titles after scrolling or switching feeds/categories</label>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="group-name">Automatic article translation</label>
+      <div class="group-controls">
+        <label><input type="checkbox" name="auto_translate_content" value="1" <?php echo $autoContent ? 'checked' : ''; ?>> Automatically create bilingual content when an article is opened</label>
       </div>
     </div>
 
