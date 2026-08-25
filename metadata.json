@@ -1,0 +1,8 @@
+{
+  "name": "xExtension-AITranslator",
+  "author": "smallSheep123",
+  "description": "AI-powered bilingual titles, article translation, and summaries for FreshRSS using OpenAI-compatible APIs.",
+  "version": "0.1.0",
+  "entrypoint": "AITranslator",
+  "type": "user"
+}
