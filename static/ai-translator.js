@@ -5,28 +5,36 @@
   var titleTimer = null;
   var observer = null;
   var blockSeq = 0;
+  var titleSeq = 0;
 
-  function config() {
-    var candidates = [
-      window.extensions && window.extensions.aiTranslator,
-      window.context && window.context.aiTranslator,
-      window.context && window.context.extensions && window.context.extensions.aiTranslator
-    ];
-    for (var i = 0; i < candidates.length; i += 1) {
-      if (candidates[i] && typeof candidates[i] === 'object') return candidates[i];
+  function rawExtensionConfig() {
+    if (window.context && window.context.extensions && window.context.extensions.aiTranslator) {
+      return window.context.extensions.aiTranslator;
+    }
+    if (typeof context !== 'undefined' && context && context.extensions && context.extensions.aiTranslator) {
+      return context.extensions.aiTranslator;
     }
     return {};
   }
 
-  function csrf() {
-    var c = config();
-    return c.csrf || (window.context && window.context.csrf) || '';
+  function config() {
+    var raw = rawExtensionConfig();
+    return {
+      titleEndpoint: raw.titleEndpoint || '?c=AITranslator&a=translateTitles',
+      blocksEndpoint: raw.blocksEndpoint || '?c=AITranslator&a=translateBlocks',
+      summaryEndpoint: raw.summaryEndpoint || '?c=AITranslator&a=summary',
+      csrf: raw.csrf || (window.context && window.context.csrf) || (typeof context !== 'undefined' && context ? context.csrf : '') || '',
+      autoTranslateTitles: raw.autoTranslateTitles !== false,
+      autoTranslateContent: raw.autoTranslateContent !== false,
+      displayMode: raw.displayMode || 'bilingual',
+      titleBatchSize: Math.max(1, Math.min(30, Number(raw.titleBatchSize || 12)))
+    };
   }
 
   function post(endpoint, fields) {
     var data = new URLSearchParams();
     Object.keys(fields).forEach(function (k) { data.set(k, fields[k]); });
-    data.set('_csrf', csrf());
+    data.set('_csrf', config().csrf);
     data.set('ajax', '1');
 
     return fetch(endpoint, {
@@ -54,9 +62,9 @@
     return letters > 0 && cjk / letters >= 0.45;
   }
 
-  function titleAnchor(flux) {
-    if (!flux || !flux.querySelector) return null;
-    return flux.querySelector('.flux_header a.item-element.title, h1.title a.go_website');
+  function titleAnchors(flux) {
+    if (!flux || !flux.querySelectorAll) return [];
+    return Array.from(flux.querySelectorAll('.flux_header a.item-element.title, h1.title a.go_website'));
   }
 
   function extractOriginalTitle(anchor) {
@@ -64,7 +72,7 @@
     if (anchor.dataset.aitOriginalTitle) return anchor.dataset.aitOriginalTitle;
 
     var clone = anchor.cloneNode(true);
-    clone.querySelectorAll('.author, .ait-cn-title, .ait-original-title').forEach(function (n) { n.remove(); });
+    clone.querySelectorAll('.author, .ait-cn-title, .ait-original-title, .ait-original-only-title').forEach(function (n) { n.remove(); });
     var text = clone.textContent.trim();
     anchor.dataset.aitOriginalTitle = text;
     return text;
@@ -78,9 +86,10 @@
   function renderTitle(anchor, chinese, original) {
     if (!anchor || !chinese) return;
     var author = preserveAuthor(anchor);
-    var mode = config().displayMode || 'bilingual';
+    var mode = config().displayMode;
 
     while (anchor.firstChild) anchor.removeChild(anchor.firstChild);
+    anchor.classList.add('ait-title-ready');
 
     if (mode !== 'original') {
       var cn = document.createElement('span');
@@ -90,12 +99,12 @@
     }
 
     if (mode === 'bilingual') {
-      var en = document.createElement('span');
-      en.className = 'ait-original-title';
-      en.dataset.fullTitle = original;
-      en.title = original;
-      en.textContent = original;
-      anchor.appendChild(en);
+      var originalLine = document.createElement('span');
+      originalLine.className = 'ait-original-title';
+      originalLine.dataset.fullTitle = original;
+      originalLine.title = original;
+      originalLine.textContent = original;
+      anchor.appendChild(originalLine);
     } else if (mode === 'original') {
       var raw = document.createElement('span');
       raw.className = 'ait-original-only-title';
@@ -108,12 +117,12 @@
       anchor.appendChild(author);
     }
     anchor.dataset.aitTranslated = '1';
+    anchor.dataset.aitQueued = '';
   }
 
-  function queueFlux(flux) {
-    if (!config().autoTranslateTitles) return;
-    var anchor = titleAnchor(flux);
-    if (!anchor || anchor.dataset.aitQueued === '1' || anchor.dataset.aitTranslated === '1') return;
+  function queueAnchor(anchor) {
+    if (!config().autoTranslateTitles || !anchor) return;
+    if (anchor.dataset.aitQueued === '1' || anchor.dataset.aitTranslated === '1') return;
 
     var original = extractOriginalTitle(anchor);
     if (!original) return;
@@ -123,50 +132,64 @@
       return;
     }
 
-    var id = flux.getAttribute('data-entry') || flux.dataset.entry || flux.id || ('dom-' + Math.random().toString(36).slice(2));
+    var id = 'title-' + (++titleSeq);
     anchor.dataset.aitQueued = '1';
     titleQueue.set(id, { id: id, text: original, anchor: anchor });
 
     if (titleTimer) clearTimeout(titleTimer);
-    titleTimer = setTimeout(flushTitles, 120);
+    titleTimer = setTimeout(flushTitles, 80);
+  }
+
+  function queueFlux(flux) {
+    titleAnchors(flux).forEach(queueAnchor);
   }
 
   function scanTitles(root) {
     if (!root || !root.querySelectorAll) return;
     if (root.matches && root.matches('.flux')) queueFlux(root);
     root.querySelectorAll('.flux').forEach(queueFlux);
+
+    if (root.matches && root.matches('.flux_header a.item-element.title, h1.title a.go_website')) {
+      queueAnchor(root);
+    }
+    root.querySelectorAll('.flux_header a.item-element.title, h1.title a.go_website').forEach(queueAnchor);
   }
 
   function flushTitles() {
     titleTimer = null;
     if (titleQueue.size === 0) return;
 
-    var batchSize = Math.max(1, Math.min(30, Number(config().titleBatchSize || 12)));
-    var selected = Array.from(titleQueue.values()).slice(0, batchSize);
+    var selected = Array.from(titleQueue.values()).slice(0, config().titleBatchSize);
     selected.forEach(function (item) { titleQueue.delete(item.id); });
-
     var payload = selected.map(function (item) { return { id: item.id, text: item.text }; });
 
-    post(config().titleEndpoint || '?c=AITranslator&a=translateTitles', {
-      items_json: JSON.stringify(payload)
-    }).then(function (body) {
-      selected.forEach(function (item) {
-        var translated = body.items && body.items[item.id];
-        if (translated) {
-          renderTitle(item.anchor, translated, item.text);
-        } else {
-          item.anchor.dataset.aitQueued = '';
-        }
+    post(config().titleEndpoint, { items_json: JSON.stringify(payload) })
+      .then(function (body) {
+        selected.forEach(function (item) {
+          var translated = body.items && body.items[item.id];
+          if (translated) renderTitle(item.anchor, translated, item.text);
+          else item.anchor.dataset.aitQueued = '';
+        });
+      })
+      .catch(function (err) {
+        console.error('[AI Translator] title translation:', err);
+        selected.forEach(function (item) { item.anchor.dataset.aitQueued = ''; });
+      })
+      .finally(function () {
+        if (titleQueue.size > 0) titleTimer = setTimeout(flushTitles, 80);
       });
-    }).catch(function () {
-      selected.forEach(function (item) { item.anchor.dataset.aitQueued = ''; });
-    }).finally(function () {
-      if (titleQueue.size > 0) titleTimer = setTimeout(flushTitles, 100);
-    });
   }
 
   function articleTextContainer(flux) {
     return flux && flux.querySelector ? flux.querySelector('.flux_content .text, .content .text') : null;
+  }
+
+  function button(label, cls) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn ' + cls;
+    b.textContent = label;
+    return b;
   }
 
   function ensureToolbar(flux) {
@@ -177,7 +200,7 @@
     var toolbar = document.createElement('div');
     toolbar.className = 'ait-toolbar';
 
-    var translate = button('AI 双语翻译', 'ait-translate');
+    var translate = button('重新翻译', 'ait-translate');
     var summary = button('AI 摘要', 'ait-summary');
     var mode = document.createElement('div');
     mode.className = 'ait-mode-switch';
@@ -185,7 +208,7 @@
     [['zh', '中文'], ['bilingual', '双语'], ['original', '原文']].forEach(function (pair) {
       var b = button(pair[1], 'ait-mode-btn');
       b.dataset.mode = pair[0];
-      if ((config().displayMode || 'bilingual') === pair[0]) b.classList.add('active');
+      if (config().displayMode === pair[0]) b.classList.add('active');
       mode.appendChild(b);
     });
 
@@ -197,16 +220,7 @@
     toolbar.appendChild(mode);
     toolbar.appendChild(status);
     text.parentNode.insertBefore(toolbar, text);
-
-    applyReadingMode(flux, config().displayMode || 'bilingual');
-  }
-
-  function button(label, cls) {
-    var b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'btn ' + cls;
-    b.textContent = label;
-    return b;
+    applyReadingMode(flux, config().displayMode);
   }
 
   function collectBlocks(container) {
@@ -223,35 +237,49 @@
     return blocks;
   }
 
-  function translateArticle(flux) {
-    var container = articleTextContainer(flux);
-    var status = flux.querySelector('.ait-status');
-    if (!container) return;
-
-    var blocks = collectBlocks(container).filter(function (x) {
-      return !x.element.parentNode.querySelector(':scope > .ait-translation[data-for="' + x.id + '"]');
+  function hasTranslationFor(element) {
+    if (!element || !element.dataset.aitBlockId || !element.parentNode) return false;
+    var id = element.dataset.aitBlockId;
+    return Array.from(element.parentNode.children).some(function (child) {
+      return child.classList && child.classList.contains('ait-translation') && child.dataset.for === id;
     });
+  }
+
+  function translateArticle(flux, force) {
+    var container = articleTextContainer(flux);
+    if (!container || flux.dataset.aitTranslating === '1') return;
+
+    ensureToolbar(flux);
+    var status = flux.querySelector('.ait-status');
+    var blocks = collectBlocks(container).filter(function (x) { return force || !hasTranslationFor(x.element); });
 
     if (blocks.length === 0) {
-      setStatus(status, '已无需要翻译的新段落');
-      applyReadingMode(flux, 'bilingual');
+      flux.dataset.aitContentDone = '1';
+      setStatus(status, '双语内容已就绪');
+      applyReadingMode(flux, config().displayMode);
       return;
     }
 
-    setStatus(status, '翻译中…');
+    flux.dataset.aitTranslating = '1';
+    setStatus(status, '正在自动翻译正文…');
+
+    if (force) {
+      container.querySelectorAll('.ait-translation').forEach(function (n) { n.remove(); });
+      container.querySelectorAll('.ait-original-block').forEach(function (n) { n.classList.remove('ait-original-block'); });
+    }
+
     var batches = [];
     for (var i = 0; i < blocks.length; i += 8) batches.push(blocks.slice(i, i + 8));
 
     var chain = Promise.resolve();
     batches.forEach(function (batch) {
       chain = chain.then(function () {
-        return post(config().blocksEndpoint || '?c=AITranslator&a=translateBlocks', {
+        return post(config().blocksEndpoint, {
           items_json: JSON.stringify(batch.map(function (x) { return { id: x.id, text: x.text }; }))
         }).then(function (body) {
           batch.forEach(function (item) {
             var translated = body.items && body.items[item.id];
-            if (!translated) return;
-
+            if (!translated || !item.element.parentNode) return;
             item.element.classList.add('ait-original-block');
             var div = document.createElement('div');
             div.className = 'ait-translation';
@@ -264,23 +292,37 @@
     });
 
     chain.then(function () {
+      flux.dataset.aitContentDone = '1';
       setStatus(status, '双语翻译完成');
-      applyReadingMode(flux, 'bilingual');
+      applyReadingMode(flux, config().displayMode);
     }).catch(function (err) {
+      console.error('[AI Translator] article translation:', err);
       setStatus(status, err.message || '翻译失败', true);
+    }).finally(function () {
+      flux.dataset.aitTranslating = '';
     });
+  }
+
+  function maybeAutoTranslateArticle(flux) {
+    if (!flux || !config().autoTranslateContent) return;
+    var container = articleTextContainer(flux);
+    if (!container || flux.dataset.aitContentDone === '1' || flux.dataset.aitTranslating === '1') return;
+
+    // FreshRSS marks the opened item active. In reader mode the content may be visible without that class.
+    var visible = flux.classList.contains('active') || (container.offsetParent !== null && container.getBoundingClientRect().height > 0);
+    if (!visible) return;
+    translateArticle(flux, false);
   }
 
   function summarizeArticle(flux) {
     var container = articleTextContainer(flux);
     var status = flux.querySelector('.ait-status');
     if (!container) return;
-
     var text = container.textContent.trim();
     if (!text) return;
     setStatus(status, '摘要生成中…');
 
-    post(config().summaryEndpoint || '?c=AITranslator&a=summary', { text: text })
+    post(config().summaryEndpoint, { text: text })
       .then(function (body) {
         var panel = flux.querySelector('.ait-summary-panel');
         if (!panel) {
@@ -291,9 +333,7 @@
         panel.textContent = body.summary || '';
         setStatus(status, '摘要已生成');
       })
-      .catch(function (err) {
-        setStatus(status, err.message || '摘要失败', true);
-      });
+      .catch(function (err) { setStatus(status, err.message || '摘要失败', true); });
   }
 
   function setStatus(el, message, error) {
@@ -309,6 +349,22 @@
     });
   }
 
+  function setupFlux(flux) {
+    if (!flux) return;
+    queueFlux(flux);
+    ensureToolbar(flux);
+    maybeAutoTranslateArticle(flux);
+  }
+
+  function setupAround(node) {
+    if (!node || node.nodeType !== 1) return;
+    if (node.matches && node.matches('.flux')) setupFlux(node);
+    var parentFlux = node.closest ? node.closest('.flux') : null;
+    if (parentFlux) setupFlux(parentFlux);
+    if (node.querySelectorAll) node.querySelectorAll('.flux').forEach(setupFlux);
+    scanTitles(node);
+  }
+
   function handleClick(event) {
     var originalTitle = event.target.closest('.ait-original-title');
     if (originalTitle) {
@@ -322,9 +378,8 @@
 
     var flux = event.target.closest('.flux');
     if (!flux) return;
-
     if (event.target.closest('.ait-translate')) {
-      translateArticle(flux);
+      translateArticle(flux, true);
       return;
     }
     if (event.target.closest('.ait-summary')) {
@@ -332,37 +387,32 @@
       return;
     }
     var mode = event.target.closest('.ait-mode-btn');
-    if (mode) {
-      applyReadingMode(flux, mode.dataset.mode);
-    }
+    if (mode) applyReadingMode(flux, mode.dataset.mode);
   }
 
   function bind() {
+    document.querySelectorAll('.flux').forEach(setupFlux);
     scanTitles(document);
-    document.querySelectorAll('.flux').forEach(ensureToolbar);
     document.body.addEventListener('click', handleClick);
 
     var stream = document.getElementById('stream') || document.getElementById('global') || document.body;
     observer = new MutationObserver(function (mutations) {
       mutations.forEach(function (m) {
-        m.addedNodes.forEach(function (node) {
-          if (!node || node.nodeType !== 1) return;
-          scanTitles(node);
-          if (node.matches && node.matches('.flux')) ensureToolbar(node);
-          if (node.querySelectorAll) node.querySelectorAll('.flux').forEach(ensureToolbar);
-        });
+        if (m.type === 'attributes' && m.target && m.target.classList && m.target.classList.contains('flux')) {
+          setupFlux(m.target);
+          return;
+        }
+        m.addedNodes.forEach(setupAround);
       });
     });
-    observer.observe(stream, { childList: true, subtree: true });
+    observer.observe(stream, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bind);
-  } else {
-    bind();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+
   document.addEventListener('freshrss:globalContextLoaded', function () {
+    document.querySelectorAll('.flux').forEach(setupFlux);
     scanTitles(document);
-    document.querySelectorAll('.flux').forEach(ensureToolbar);
   });
 })();
