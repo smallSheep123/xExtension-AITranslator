@@ -76,6 +76,7 @@ PROMPT;
             'content_model' => trim(Minz_Request::paramString('content_model', true)) ?: self::DEFAULT_CONTENT_MODEL,
             'summary_model' => trim(Minz_Request::paramString('summary_model', true)) ?: self::DEFAULT_SUMMARY_MODEL,
             'auto_translate_titles' => Minz_Request::paramString('auto_translate_titles', true) === '1' ? '1' : '0',
+            'auto_translate_content' => Minz_Request::paramString('auto_translate_content', true) === '1' ? '1' : '0',
             'display_mode' => $displayMode,
             'title_batch_size' => (string)$batchSize,
             'title_prompt' => trim(Minz_Request::paramString('title_prompt', true)) ?: self::DEFAULT_TITLE_PROMPT,
@@ -99,6 +100,7 @@ PROMPT;
             'summaryEndpoint' => '?c=AITranslator&a=summary',
             'csrf' => FreshRSS_Auth::csrfToken(),
             'autoTranslateTitles' => $this->getConfigValue('auto_translate_titles', '1') === '1',
+            'autoTranslateContent' => $this->getConfigValue('auto_translate_content', '1') === '1',
             'displayMode' => $this->getConfigValue('display_mode', 'bilingual'),
             'titleBatchSize' => (int)$this->getConfigValue('title_batch_size', '12'),
         ];
@@ -125,37 +127,14 @@ PROMPT;
         $this->setUserConfiguration($current);
     }
 
-    public function getApiBaseUrl(): string {
-        return $this->getConfigValue('api_base_url', self::DEFAULT_BASE_URL);
-    }
-
-    public function getApiKey(): string {
-        return $this->getConfigValue('api_key');
-    }
-
-    public function getTitleModel(): string {
-        return $this->getConfigValue('title_model', self::DEFAULT_TITLE_MODEL);
-    }
-
-    public function getContentModel(): string {
-        return $this->getConfigValue('content_model', self::DEFAULT_CONTENT_MODEL);
-    }
-
-    public function getSummaryModel(): string {
-        return $this->getConfigValue('summary_model', self::DEFAULT_SUMMARY_MODEL);
-    }
-
-    public function getTitlePrompt(): string {
-        return $this->getConfigValue('title_prompt', self::DEFAULT_TITLE_PROMPT);
-    }
-
-    public function getContentPrompt(): string {
-        return $this->getConfigValue('content_prompt', self::DEFAULT_CONTENT_PROMPT);
-    }
-
-    public function getSummaryPrompt(): string {
-        return $this->getConfigValue('summary_prompt', self::DEFAULT_SUMMARY_PROMPT);
-    }
+    public function getApiBaseUrl(): string { return $this->getConfigValue('api_base_url', self::DEFAULT_BASE_URL); }
+    public function getApiKey(): string { return $this->getConfigValue('api_key'); }
+    public function getTitleModel(): string { return $this->getConfigValue('title_model', self::DEFAULT_TITLE_MODEL); }
+    public function getContentModel(): string { return $this->getConfigValue('content_model', self::DEFAULT_CONTENT_MODEL); }
+    public function getSummaryModel(): string { return $this->getConfigValue('summary_model', self::DEFAULT_SUMMARY_MODEL); }
+    public function getTitlePrompt(): string { return $this->getConfigValue('title_prompt', self::DEFAULT_TITLE_PROMPT); }
+    public function getContentPrompt(): string { return $this->getConfigValue('content_prompt', self::DEFAULT_CONTENT_PROMPT); }
+    public function getSummaryPrompt(): string { return $this->getConfigValue('summary_prompt', self::DEFAULT_SUMMARY_PROMPT); }
 
     private function cachePath(): string {
         $user = Minz_User::name() ?? 'default';
@@ -165,17 +144,11 @@ PROMPT;
     /** @return array{titles:array<string,array<string,mixed>>,blocks:array<string,array<string,mixed>>} */
     public function readCache(): array {
         $path = $this->cachePath();
-        if (!is_file($path)) {
-            return ['titles' => [], 'blocks' => []];
-        }
+        if (!is_file($path)) return ['titles' => [], 'blocks' => []];
         $raw = @file_get_contents($path);
-        if (!is_string($raw)) {
-            return ['titles' => [], 'blocks' => []];
-        }
+        if (!is_string($raw)) return ['titles' => [], 'blocks' => []];
         $data = json_decode($raw, true);
-        if (!is_array($data)) {
-            return ['titles' => [], 'blocks' => []];
-        }
+        if (!is_array($data)) return ['titles' => [], 'blocks' => []];
         return [
             'titles' => is_array($data['titles'] ?? null) ? $data['titles'] : [],
             'blocks' => is_array($data['blocks'] ?? null) ? $data['blocks'] : [],
@@ -186,9 +159,7 @@ PROMPT;
     public function writeCache(array $cache): void {
         $path = $this->cachePath();
         $dir = dirname($path);
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0750, true);
-        }
+        if (!is_dir($dir)) @mkdir($dir, 0750, true);
 
         foreach (['titles' => 2500, 'blocks' => 5000] as $bucket => $limit) {
             if (count($cache[$bucket]) > $limit) {
@@ -200,10 +171,7 @@ PROMPT;
         }
 
         $json = json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if (!is_string($json)) {
-            return;
-        }
-
+        if (!is_string($json)) return;
         $tmp = $path . '.tmp';
         if (@file_put_contents($tmp, $json, LOCK_EX) !== false) {
             @chmod($tmp, 0640);
